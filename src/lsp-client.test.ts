@@ -975,4 +975,918 @@ describe('LSPClient', () => {
       sendRequestSpy.mockRestore();
     });
   });
+
+  describe('hover', () => {
+    it('should return hover info when available', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockHoverResult = {
+        contents: { kind: 'markdown' as const, value: '```typescript\nfunction test(): void\n```' },
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 0, character: 4 },
+        },
+      };
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { hoverProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockHoverResult);
+
+      const result = await client.hover('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual(mockHoverResult);
+      expect(sendRequestSpy).toHaveBeenCalledWith(
+        mockServerState.process,
+        'textDocument/hover',
+        {
+          textDocument: { uri: pathToUri('/test.ts') },
+          position: { line: 0, character: 0 },
+        },
+        30000
+      );
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return null when server does not support hover', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { hoverProvider: false },
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const result = await client.hover('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toBeNull();
+
+      getServerSpy.mockRestore();
+    });
+
+    it('should return null when no hover info at position', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { hoverProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.hover('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toBeNull();
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+  });
+
+  describe('goToImplementation', () => {
+    it('should return single location', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockLocation = {
+        uri: 'file:///impl.ts',
+        range: {
+          start: { line: 10, character: 0 },
+          end: { line: 10, character: 20 },
+        },
+      };
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { implementationProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockLocation);
+
+      const result = await client.goToImplementation('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual(mockLocation);
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return multiple locations', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockLocations = [
+        {
+          uri: 'file:///impl1.ts',
+          range: { start: { line: 10, character: 0 }, end: { line: 10, character: 20 } },
+        },
+        {
+          uri: 'file:///impl2.ts',
+          range: { start: { line: 20, character: 0 }, end: { line: 20, character: 25 } },
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { implementationProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockLocations);
+
+      const result = await client.goToImplementation('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toHaveLength(2);
+      expect(result[0]?.uri).toBe('file:///impl1.ts');
+      expect(result[1]?.uri).toBe('file:///impl2.ts');
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should normalize LocationLink to Location', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockLocationLinks = [
+        {
+          targetUri: 'file:///impl.ts',
+          targetRange: { start: { line: 10, character: 0 }, end: { line: 10, character: 20 } },
+          targetSelectionRange: {
+            start: { line: 10, character: 5 },
+            end: { line: 10, character: 15 },
+          },
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { implementationProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockLocationLinks);
+
+      const result = await client.goToImplementation('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.uri).toBe('file:///impl.ts');
+      expect(result[0]?.range).toEqual({
+        start: { line: 10, character: 0 },
+        end: { line: 10, character: 20 },
+      });
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return empty array when server does not support implementation', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { implementationProvider: false },
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const result = await client.goToImplementation('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+
+      getServerSpy.mockRestore();
+    });
+
+    it('should return empty array when result is null', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { implementationProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.goToImplementation('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+  });
+
+  describe('workspaceSymbol', () => {
+    it('should return results from single server via filePath', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockSymbols = [
+        {
+          name: 'TestClass',
+          kind: 5,
+          location: {
+            uri: 'file:///test.ts',
+            range: { start: { line: 0, character: 0 }, end: { line: 10, character: 1 } },
+          },
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockSymbols);
+
+      const result = await client.workspaceSymbol('Test', { filePath: '/test.ts' });
+
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]?.name).toBe('TestClass');
+      expect(result.noServers).toBeUndefined();
+
+      getServerSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return noServers when no servers are running', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      // Ensure servers map is empty
+      (client as any).servers = new Map();
+
+      const result = await client.workspaceSymbol('Test');
+
+      expect(result.results).toEqual([]);
+      expect(result.noServers).toBe(true);
+    });
+
+    it('should fan-out to all running servers', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockSymbols1 = [{ name: 'Symbol1', kind: 5, location: { uri: 'file:///a.ts' } }];
+      const mockSymbols2 = [{ name: 'Symbol2', kind: 12, location: { uri: 'file:///b.py' } }];
+
+      const mockServer1 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const mockServer2 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['py'], command: ['py-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer1);
+      serversMap.set('py-server', mockServer2);
+      (client as any).servers = serversMap;
+
+      let callCount = 0;
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockImplementation(async () => {
+        callCount++;
+        return callCount === 1 ? mockSymbols1 : mockSymbols2;
+      });
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toHaveLength(2);
+      expect(sendRequestSpy).toHaveBeenCalledTimes(2);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should respect limit parameter', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockSymbols = Array.from({ length: 150 }, (_, i) => ({
+        name: `Symbol${i}`,
+        kind: 5,
+        location: { uri: `file:///file${i}.ts` },
+      }));
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServerState);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockSymbols);
+
+      const result = await client.workspaceSymbol('Symbol', { limit: 50 });
+
+      expect(result.results).toHaveLength(50);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should skip servers that do not support workspaceSymbol', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockSymbols = [{ name: 'Symbol1', kind: 5, location: { uri: 'file:///a.ts' } }];
+
+      const mockServer1 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: false },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const mockServer2 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['py'], command: ['py-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer1);
+      serversMap.set('py-server', mockServer2);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockSymbols);
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toHaveLength(1);
+      expect(sendRequestSpy).toHaveBeenCalledTimes(1);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should handle server errors gracefully', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServer1 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer1);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockRejectedValue(new Error('Server timeout'));
+
+      const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toEqual([]);
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[workspaceSymbol] Server error')
+      );
+
+      sendRequestSpy.mockRestore();
+      stderrSpy.mockRestore();
+    });
+  });
+
+  describe('prepareCallHierarchy', () => {
+    it('should return items with _itemId and cache them', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItems = [
+        {
+          name: 'testFunction',
+          kind: 12,
+          uri: 'file:///test.ts',
+          range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+          selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { callHierarchyProvider: true },
+        adapter: undefined,
+        key: 'test-server-key',
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockItems);
+
+      const result = await client.prepareCallHierarchy('/test.ts', { line: 0, character: 10 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toBe('testFunction');
+      expect(result[0]?._itemId).toMatch(/^ch_\d+_\d+$/);
+
+      // Verify item is cached
+      const cache = (client as any).callHierarchyCache;
+      expect(cache.size).toBe(1);
+      const cachedEntry = cache.get(result[0]?._itemId);
+      expect(cachedEntry?.serverKey).toBe('test-server-key');
+      expect(cachedEntry?.item.name).toBe('testFunction');
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return empty array when server does not support callHierarchy', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { callHierarchyProvider: false },
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const result = await client.prepareCallHierarchy('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+
+      getServerSpy.mockRestore();
+    });
+
+    it('should return empty array when result is null', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { callHierarchyProvider: true },
+        adapter: undefined,
+        key: 'test-server-key',
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.prepareCallHierarchy('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+  });
+
+  describe('incomingCalls', () => {
+    it('should return calls for valid item_id', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const mockIncomingCalls = [
+        {
+          from: {
+            name: 'callerFunction',
+            kind: 12,
+            uri: 'file:///caller.ts',
+            range: { start: { line: 10, character: 0 }, end: { line: 15, character: 1 } },
+            selectionRange: { start: { line: 10, character: 9 }, end: { line: 10, character: 23 } },
+          },
+          fromRanges: [{ start: { line: 12, character: 2 }, end: { line: 12, character: 14 } }],
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        adapter: undefined,
+      };
+
+      // Setup cache with test item
+      const itemId = 'ch_test_123';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'test-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      // Setup servers map
+      const serversMap = new Map();
+      serversMap.set('test-server-key', mockServerState);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockIncomingCalls);
+
+      const result = await client.incomingCalls(itemId);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.from.name).toBe('callerFunction');
+      expect(sendRequestSpy).toHaveBeenCalledWith(
+        mockServerState.process,
+        'callHierarchy/incomingCalls',
+        { item: mockItem },
+        45000
+      );
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should throw error for invalid item_id', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      await expect(client.incomingCalls('invalid_id')).rejects.toThrow(
+        'CallHierarchyItem not found or expired: invalid_id. Use prepareCallHierarchy first.'
+      );
+    });
+
+    it('should throw error when server is no longer available', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      // Setup cache with test item but no matching server
+      const itemId = 'ch_test_456';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'nonexistent-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      // Empty servers map
+      (client as any).servers = new Map();
+
+      await expect(client.incomingCalls(itemId)).rejects.toThrow(
+        'LSP server no longer available. Re-run prepareCallHierarchy.'
+      );
+    });
+  });
+
+  describe('outgoingCalls', () => {
+    it('should return calls for valid item_id', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const mockOutgoingCalls = [
+        {
+          to: {
+            name: 'calleeFunction',
+            kind: 12,
+            uri: 'file:///callee.ts',
+            range: { start: { line: 20, character: 0 }, end: { line: 25, character: 1 } },
+            selectionRange: { start: { line: 20, character: 9 }, end: { line: 20, character: 23 } },
+          },
+          fromRanges: [{ start: { line: 3, character: 2 }, end: { line: 3, character: 16 } }],
+        },
+      ];
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        adapter: undefined,
+      };
+
+      // Setup cache with test item
+      const itemId = 'ch_test_789';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'test-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      // Setup servers map
+      const serversMap = new Map();
+      serversMap.set('test-server-key', mockServerState);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockOutgoingCalls);
+
+      const result = await client.outgoingCalls(itemId);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.to.name).toBe('calleeFunction');
+      expect(sendRequestSpy).toHaveBeenCalledWith(
+        mockServerState.process,
+        'callHierarchy/outgoingCalls',
+        { item: mockItem },
+        45000
+      );
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should throw error for invalid item_id', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      await expect(client.outgoingCalls('invalid_id')).rejects.toThrow(
+        'CallHierarchyItem not found or expired: invalid_id. Use prepareCallHierarchy first.'
+      );
+    });
+  });
+
+  describe('call hierarchy cache cleanup', () => {
+    it('should remove items older than 5 minutes', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const cache = (client as any).callHierarchyCache;
+
+      // Add old item (6 minutes ago)
+      cache.set('old_item', {
+        serverKey: 'server1',
+        item: mockItem,
+        createdAt: Date.now() - 6 * 60 * 1000,
+      });
+
+      // Add recent item
+      cache.set('recent_item', {
+        serverKey: 'server2',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      expect(cache.size).toBe(2);
+
+      // Trigger cleanup via private method
+      (client as any).cleanupOldCallHierarchyItems();
+
+      expect(cache.size).toBe(1);
+      expect(cache.has('old_item')).toBe(false);
+      expect(cache.has('recent_item')).toBe(true);
+    });
+
+    it('should clear cache for specific server on restart', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const cache = (client as any).callHierarchyCache;
+
+      // Add items for different servers
+      cache.set('item1', {
+        serverKey: 'server-to-restart',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      cache.set('item2', {
+        serverKey: 'server-to-restart',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      cache.set('item3', {
+        serverKey: 'other-server',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      expect(cache.size).toBe(3);
+
+      // Clear cache for specific server
+      (client as any).clearCallHierarchyCacheForServer('server-to-restart');
+
+      expect(cache.size).toBe(1);
+      expect(cache.has('item1')).toBe(false);
+      expect(cache.has('item2')).toBe(false);
+      expect(cache.has('item3')).toBe(true);
+    });
+  });
 });
