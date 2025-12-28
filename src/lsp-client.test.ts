@@ -879,6 +879,8 @@ describe('LSPClient', () => {
         initialized: true,
         openFiles: new Set(),
         diagnostics: new Map([[pathToUri('/test.ts'), mockDiagnostics]]),
+        diagnosticVersions: new Map([[pathToUri('/test.ts'), 1]]),
+        fileVersions: new Map([['/test.ts', 1]]),
       };
 
       const getServerSpy = spyOn(

@@ -742,16 +742,27 @@ export class LSPClient {
       process.stderr.write(`[DEBUG syncFileContent] Syncing file: ${filePath}\n`);
 
       const fileContent = readFileSync(filePath, 'utf-8');
-      await this.sendDidChange(serverState, filePath, fileContent);
-
-      // Clear cached diagnostics - they are now stale after file content changed
       const fileUri = pathToUri(filePath);
+
+      // Check if content actually changed to avoid unnecessary cache invalidation
+      const cachedContent = serverState.fileContents.get(filePath);
+      if (cachedContent === fileContent) {
+        process.stderr.write(
+          `[DEBUG syncFileContent] Content unchanged, skipping sync for ${filePath}\n`
+        );
+        return;
+      }
+
+      // Clear cached diagnostics BEFORE sending didChange to avoid race condition
+      // (publishDiagnostics could arrive between sendDidChange and delete, causing us to discard fresh data)
       serverState.diagnostics.delete(fileUri);
       serverState.lastDiagnosticUpdate.delete(fileUri);
       serverState.diagnosticVersions.delete(fileUri);
       process.stderr.write(
         `[DEBUG syncFileContent] Cleared stale diagnostics cache for ${fileUri}\n`
       );
+
+      await this.sendDidChange(serverState, filePath, fileContent);
     } catch (error) {
       process.stderr.write(`[DEBUG syncFileContent] Failed to sync file ${filePath}: ${error}\n`);
       // Don't throw - syncing is best effort
@@ -1701,10 +1712,29 @@ export class LSPClient {
     const cachedDiagnostics = serverState.diagnostics.get(fileUri);
 
     if (cachedDiagnostics !== undefined) {
-      process.stderr.write(
-        `[DEBUG getDiagnostics] Returning ${cachedDiagnostics.length} cached diagnostics from publishDiagnostics\n`
-      );
-      return cachedDiagnostics;
+      // Validate version to avoid returning stale diagnostics from late publishDiagnostics
+      const cacheVersion = serverState.diagnosticVersions.get(fileUri);
+      const fileVersion = serverState.fileVersions.get(filePath);
+
+      // Cache is valid only if diagnostic version matches or exceeds file version
+      // (cacheVersion undefined means server didn't send version - trust the cache)
+      const isStale =
+        cacheVersion !== undefined && fileVersion !== undefined && cacheVersion < fileVersion;
+
+      if (isStale) {
+        process.stderr.write(
+          `[DEBUG getDiagnostics] Stale cache detected (diagnosticVersion=${cacheVersion} < fileVersion=${fileVersion}), clearing and waiting for fresh diagnostics\n`
+        );
+        // Clear stale cache so fallback paths don't return it either
+        serverState.diagnostics.delete(fileUri);
+        serverState.diagnosticVersions.delete(fileUri);
+        // Don't return stale cache - fall through to wait for fresh diagnostics
+      } else {
+        process.stderr.write(
+          `[DEBUG getDiagnostics] Returning ${cachedDiagnostics.length} cached diagnostics from publishDiagnostics\n`
+        );
+        return cachedDiagnostics;
+      }
     }
 
     // If no cached diagnostics, try the pull-based textDocument/diagnostic
