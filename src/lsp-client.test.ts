@@ -1384,19 +1384,192 @@ describe('LSPClient', () => {
       serversMap.set('py-server', mockServer2);
       (client as any).servers = serversMap;
 
-      let callCount = 0;
       const sendRequestSpy = spyOn(
         client as unknown as LSPClientInternal,
         'sendRequest'
-      ).mockImplementation(async () => {
-        callCount++;
-        return callCount === 1 ? mockSymbols1 : mockSymbols2;
+      ).mockImplementation(async (proc: unknown) => {
+        // Branch on process identity for robustness
+        if (proc === mockServer1.process) return mockSymbols1;
+        if (proc === mockServer2.process) return mockSymbols2;
+        return [];
       });
 
       const result = await client.workspaceSymbol('Symbol');
 
       expect(result.results).toHaveLength(2);
       expect(sendRequestSpy).toHaveBeenCalledTimes(2);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should filter servers by extensions option', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockSymbols = [{ name: 'TsSymbol', kind: 5, location: { uri: 'file:///a.ts' } }];
+
+      const mockServer1 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts', 'tsx'], command: ['ts-server'] },
+      };
+
+      const mockServer2 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['py'], command: ['py-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer1);
+      serversMap.set('py-server', mockServer2);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(mockSymbols);
+
+      const result = await client.workspaceSymbol('Symbol', { extensions: ['ts'] });
+
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]?.name).toBe('TsSymbol');
+      // Only ts-server should be queried
+      expect(sendRequestSpy).toHaveBeenCalledTimes(1);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return noServers when extensions filter matches no running servers', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServer = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer);
+      (client as any).servers = serversMap;
+
+      // Query for extensions that don't match any running server
+      const result = await client.workspaceSymbol('Symbol', { extensions: ['go', 'rust'] });
+
+      expect(result.results).toEqual([]);
+      expect(result.noServers).toBe(true);
+    });
+
+    it('should ignore non-array responses from servers (null)', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServer = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer);
+      (client as any).servers = serversMap;
+
+      // Server returns null instead of array
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toEqual([]);
+      expect(result.noServers).toBeUndefined();
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should ignore non-array responses from servers (object)', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServer = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: true },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer);
+      (client as any).servers = serversMap;
+
+      // Server returns object instead of array
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue({ unexpected: 'object' });
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toEqual([]);
+      expect(result.noServers).toBeUndefined();
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return empty results when all servers do not support workspaceSymbol', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServer1 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: false },
+        adapter: undefined,
+        config: { extensions: ['ts'], command: ['ts-server'] },
+      };
+
+      const mockServer2 = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { workspaceSymbolProvider: false },
+        adapter: undefined,
+        config: { extensions: ['py'], command: ['py-server'] },
+      };
+
+      const serversMap = new Map();
+      serversMap.set('ts-server', mockServer1);
+      serversMap.set('py-server', mockServer2);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(client as unknown as LSPClientInternal, 'sendRequest');
+
+      const result = await client.workspaceSymbol('Symbol');
+
+      expect(result.results).toEqual([]);
+      // noServers should be undefined (servers exist, they just don't support the feature)
+      expect(result.noServers).toBeUndefined();
+      // sendRequest should never be called since all servers lack support
+      expect(sendRequestSpy).not.toHaveBeenCalled();
 
       sendRequestSpy.mockRestore();
     });
@@ -1631,6 +1804,84 @@ describe('LSPClient', () => {
       ensureFileOpenSpy.mockRestore();
       sendRequestSpy.mockRestore();
     });
+
+    it('should return empty array and not grow cache when result is empty array', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { callHierarchyProvider: true },
+        adapter: undefined,
+        key: 'test-server-key',
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue([]);
+
+      const cacheSizeBefore = (client as any).callHierarchyCache.size;
+      const result = await client.prepareCallHierarchy('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+      // Cache should not grow when result is empty
+      expect((client as any).callHierarchyCache.size).toBe(cacheSizeBefore);
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should return empty array when result is non-array object', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        serverCapabilities: { callHierarchyProvider: true },
+        adapter: undefined,
+        key: 'test-server-key',
+      };
+
+      const getServerSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'getServer'
+      ).mockResolvedValue(mockServerState);
+
+      const ensureFileOpenSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'ensureFileOpen'
+      ).mockResolvedValue(undefined);
+
+      // Server returns object instead of array
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue({ unexpected: 'object' });
+
+      const result = await client.prepareCallHierarchy('/test.ts', { line: 0, character: 0 });
+
+      expect(result).toEqual([]);
+
+      getServerSpy.mockRestore();
+      ensureFileOpenSpy.mockRestore();
+      sendRequestSpy.mockRestore();
+    });
   });
 
   describe('incomingCalls', () => {
@@ -1732,6 +1983,85 @@ describe('LSPClient', () => {
         'LSP server no longer available. Re-run prepareCallHierarchy.'
       );
     });
+
+    it('should return empty array when sendRequest returns null', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        adapter: undefined,
+      };
+
+      const itemId = 'ch_test_null';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'test-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      const serversMap = new Map();
+      serversMap.set('test-server-key', mockServerState);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.incomingCalls(itemId);
+
+      expect(result).toEqual([]);
+
+      sendRequestSpy.mockRestore();
+    });
+
+    it('should treat expired cached item as not found', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      // Add item that expired 6 minutes ago
+      const itemId = 'ch_expired_item';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'test-server-key',
+        item: mockItem,
+        createdAt: Date.now() - 6 * 60 * 1000, // 6 minutes ago
+      });
+
+      // Even though server exists, expired item should be cleaned up and treated as not found
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        adapter: undefined,
+      };
+
+      const serversMap = new Map();
+      serversMap.set('test-server-key', mockServerState);
+      (client as any).servers = serversMap;
+
+      await expect(client.incomingCalls(itemId)).rejects.toThrow(
+        'CallHierarchyItem not found or expired: ch_expired_item. Use prepareCallHierarchy first.'
+      );
+    });
   });
 
   describe('outgoingCalls', () => {
@@ -1805,6 +2135,75 @@ describe('LSPClient', () => {
       await expect(client.outgoingCalls('invalid_id')).rejects.toThrow(
         'CallHierarchyItem not found or expired: invalid_id. Use prepareCallHierarchy first.'
       );
+    });
+
+    it('should throw error when server is no longer available', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      // Setup cache with test item but no matching server
+      const itemId = 'ch_test_outgoing_no_server';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'nonexistent-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      // Empty servers map
+      (client as any).servers = new Map();
+
+      await expect(client.outgoingCalls(itemId)).rejects.toThrow(
+        'LSP server no longer available. Re-run prepareCallHierarchy.'
+      );
+    });
+
+    it('should return empty array when sendRequest returns null', async () => {
+      const client = new LSPClient(TEST_CONFIG_PATH);
+
+      const mockItem = {
+        name: 'testFunction',
+        kind: 12,
+        uri: 'file:///test.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 5, character: 1 } },
+        selectionRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 21 } },
+      };
+
+      const mockServerState = {
+        initializationPromise: Promise.resolve(),
+        process: { stdin: { write: jest.fn() } },
+        initialized: true,
+        openFiles: new Set(),
+        adapter: undefined,
+      };
+
+      const itemId = 'ch_test_outgoing_null';
+      (client as any).callHierarchyCache.set(itemId, {
+        serverKey: 'test-server-key',
+        item: mockItem,
+        createdAt: Date.now(),
+      });
+
+      const serversMap = new Map();
+      serversMap.set('test-server-key', mockServerState);
+      (client as any).servers = serversMap;
+
+      const sendRequestSpy = spyOn(
+        client as unknown as LSPClientInternal,
+        'sendRequest'
+      ).mockResolvedValue(null);
+
+      const result = await client.outgoingCalls(itemId);
+
+      expect(result).toEqual([]);
+
+      sendRequestSpy.mockRestore();
     });
   });
 
