@@ -40,6 +40,7 @@ interface ServerState {
   initializationPromise: Promise<void>;
   openFiles: Set<string>;
   fileVersions: Map<string, number>; // Track file versions for didChange notifications
+  fileContents: Map<string, string>; // Track last synced content for incremental didChange
   startTime: number;
   config: LSPServerConfig;
   restartTimer?: NodeJS.Timeout;
@@ -218,6 +219,7 @@ export class LSPClient {
       initializationPromise,
       openFiles: new Set(),
       fileVersions: new Map(),
+      fileContents: new Map(),
       startTime: Date.now(),
       config: serverConfig,
       restartTimer: undefined,
@@ -391,25 +393,12 @@ export class LSPClient {
     // Send the initialized notification after receiving the initialize response
     await this.sendNotification(childProcess, 'initialized', {});
 
-    // Wait for the server to send the initialized notification back with timeout
-    const INITIALIZATION_TIMEOUT = 3000; // 3 seconds
-    try {
-      await Promise.race([
-        initializationPromise,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('Initialization timeout')), INITIALIZATION_TIMEOUT)
-        ),
-      ]);
-    } catch (error) {
-      // If timeout or initialization fails, mark as initialized anyway
-      process.stderr.write(
-        `[DEBUG startServer] Initialization timeout or failed for ${serverConfig.command.join(' ')}, proceeding anyway: ${error}\n`
-      );
-      serverState.initialized = true;
-      if (serverState.initializationResolve) {
-        serverState.initializationResolve();
-        serverState.initializationResolve = undefined;
-      }
+    // LSP handshake ends here. The server does NOT send an "initialized" message back.
+    // Mark the server as ready immediately to avoid artificial startup delays.
+    serverState.initialized = true;
+    if (serverState.initializationResolve) {
+      serverState.initializationResolve();
+      serverState.initializationResolve = undefined;
     }
 
     // Set up auto-restart timer if configured
@@ -454,6 +443,64 @@ export class LSPClient {
               `[DEBUG handleMessage] Adapter did not handle request: ${message.method} - ${error}\n`
             );
           });
+        return;
+      }
+
+      // Built-in handling for common client-side requests.
+      // Some servers (including typescript-language-server) will block publishing diagnostics until
+      // these requests are answered. If we ignore them, the server can appear "idle" forever.
+      if (message.id) {
+        const respond = (result: unknown) => {
+          this.sendMessage(serverState.process, {
+            jsonrpc: '2.0',
+            id: message.id,
+            result,
+          });
+        };
+
+        const respondError = (code: number, errorMessage: string, data?: unknown) => {
+          this.sendMessage(serverState.process, {
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code, message: errorMessage, data },
+          });
+        };
+
+        if (
+          message.method === 'client/registerCapability' ||
+          message.method === 'client/unregisterCapability' ||
+          message.method === 'window/workDoneProgress/create'
+        ) {
+          process.stderr.write(`[DEBUG handleMessage] Handling ${message.method}\n`);
+          respond(null);
+          return;
+        }
+
+        if (message.method === 'workspace/configuration') {
+          const items = (message.params as { items?: unknown[] } | undefined)?.items;
+          process.stderr.write(
+            `[DEBUG handleMessage] Handling workspace/configuration (${Array.isArray(items) ? items.length : 0} items)\n`
+          );
+          respond(Array.isArray(items) ? items.map(() => ({})) : []);
+          return;
+        }
+
+        if (message.method === 'workspace/workspaceFolders') {
+          process.stderr.write('[DEBUG handleMessage] Handling workspace/workspaceFolders\n');
+          const root = serverState.config.rootDir || process.cwd();
+          respond([{ uri: pathToUri(root), name: 'workspace' }]);
+          return;
+        }
+
+        if (message.method === 'window/showMessageRequest') {
+          process.stderr.write('[DEBUG handleMessage] Handling window/showMessageRequest\n');
+          respond(null);
+          return;
+        }
+
+        // Unknown request from server — respond with an error so the server doesn't hang waiting.
+        process.stderr.write(`[DEBUG handleMessage] Unhandled server request: ${message.method}\n`);
+        respondError(-32601, `Unhandled server request: ${message.method}`);
         return;
       }
 
@@ -695,26 +742,15 @@ export class LSPClient {
       process.stderr.write(`[DEBUG syncFileContent] Syncing file: ${filePath}\n`);
 
       const fileContent = readFileSync(filePath, 'utf-8');
-      const uri = pathToUri(filePath);
+      await this.sendDidChange(serverState, filePath, fileContent);
 
-      // Increment version and send didChange notification
-      const version = (serverState.fileVersions.get(filePath) || 1) + 1;
-      serverState.fileVersions.set(filePath, version);
-
-      await this.sendNotification(serverState.process, 'textDocument/didChange', {
-        textDocument: {
-          uri,
-          version,
-        },
-        contentChanges: [
-          {
-            text: fileContent,
-          },
-        ],
-      });
-
+      // Clear cached diagnostics - they are now stale after file content changed
+      const fileUri = pathToUri(filePath);
+      serverState.diagnostics.delete(fileUri);
+      serverState.lastDiagnosticUpdate.delete(fileUri);
+      serverState.diagnosticVersions.delete(fileUri);
       process.stderr.write(
-        `[DEBUG syncFileContent] File synced with version ${version}: ${filePath}\n`
+        `[DEBUG syncFileContent] Cleared stale diagnostics cache for ${fileUri}\n`
       );
     } catch (error) {
       process.stderr.write(`[DEBUG syncFileContent] Failed to sync file ${filePath}: ${error}\n`);
@@ -751,12 +787,108 @@ export class LSPClient {
 
       serverState.openFiles.add(filePath);
       serverState.fileVersions.set(filePath, 1);
+      serverState.fileContents.set(filePath, fileContent);
       process.stderr.write(`[DEBUG ensureFileOpen] File opened successfully: ${filePath}\n`);
       return true; // Return true to indicate file was just opened
     } catch (error) {
       process.stderr.write(`[DEBUG ensureFileOpen] Failed to open file ${filePath}: ${error}\n`);
       throw error;
     }
+  }
+
+  private getTextDocumentSyncKind(serverState: ServerState): number | undefined {
+    const sync = serverState.serverCapabilities?.textDocumentSync;
+    if (typeof sync === 'number') return sync;
+    if (sync && typeof sync === 'object' && 'change' in sync) {
+      const change = (sync as { change?: unknown }).change;
+      if (typeof change === 'number') return change;
+    }
+    return undefined;
+  }
+
+  private endPosition(text: string): Position {
+    const lines = text.split(/\r\n|\r|\n/);
+    const lastLineIndex = Math.max(0, lines.length - 1);
+    const lastLine = lines[lastLineIndex] ?? '';
+    return { line: lastLineIndex, character: lastLine.length };
+  }
+
+  private async sendDidChange(
+    serverState: ServerState,
+    filePath: string,
+    newText: string
+  ): Promise<void> {
+    const uri = pathToUri(filePath);
+    const syncKind = this.getTextDocumentSyncKind(serverState);
+    const oldText = serverState.fileContents.get(filePath);
+
+    // Increment version and send didChange notification
+    const version = (serverState.fileVersions.get(filePath) || 1) + 1;
+    serverState.fileVersions.set(filePath, version);
+
+    if (syncKind === 2 && oldText === undefined) {
+      process.stderr.write(
+        `[DEBUG sendDidChange] Missing old content for incremental sync; reopening file: ${filePath}\n`
+      );
+      this.sendNotification(serverState.process, 'textDocument/didClose', {
+        textDocument: { uri },
+      });
+      serverState.openFiles.delete(filePath);
+      serverState.fileVersions.delete(filePath);
+      serverState.fileContents.delete(filePath);
+
+      const languageId = this.getLanguageId(filePath);
+      await this.sendNotification(serverState.process, 'textDocument/didOpen', {
+        textDocument: {
+          uri,
+          languageId,
+          version: 1,
+          text: newText,
+        },
+      });
+
+      serverState.openFiles.add(filePath);
+      serverState.fileVersions.set(filePath, 1);
+      serverState.fileContents.set(filePath, newText);
+      return;
+    }
+
+    if (syncKind === 2 && oldText !== undefined) {
+      const range = {
+        start: { line: 0, character: 0 },
+        end: this.endPosition(oldText),
+      };
+
+      await this.sendNotification(serverState.process, 'textDocument/didChange', {
+        textDocument: {
+          uri,
+          version,
+        },
+        contentChanges: [
+          {
+            range,
+            text: newText,
+          },
+        ],
+      });
+    } else {
+      await this.sendNotification(serverState.process, 'textDocument/didChange', {
+        textDocument: {
+          uri,
+          version,
+        },
+        contentChanges: [
+          {
+            text: newText,
+          },
+        ],
+      });
+    }
+
+    serverState.fileContents.set(filePath, newText);
+    process.stderr.write(
+      `[DEBUG sendDidChange] File synced with version ${version} (syncKind: ${syncKind ?? 'unknown'}): ${filePath}\n`
+    );
   }
 
   private getLanguageId(filePath: string): string {
@@ -877,6 +1009,8 @@ export class LSPClient {
 
     // Ensure the file is opened and synced with the LSP server
     const wasJustOpened = await this.ensureFileOpen(serverState, filePath);
+    // Claude edits happen outside LSP, so always sync from disk before querying diagnostics.
+    await this.syncFileContent(filePath);
 
     // If the file was just opened, give the LSP server time to index the project
     // This fixes issue #27 where the first find_references call returns incomplete results
@@ -1499,6 +1633,8 @@ export class LSPClient {
     const startTime = Date.now();
     let lastVersion = serverState.diagnosticVersions.get(fileUri) ?? -1;
     let lastUpdateTime = serverState.lastDiagnosticUpdate.get(fileUri) ?? startTime;
+    let hasAnyUpdate =
+      serverState.lastDiagnosticUpdate.has(fileUri) || serverState.diagnostics.has(fileUri);
 
     process.stderr.write(
       `[DEBUG waitForDiagnosticsIdle] Waiting for diagnostics to stabilize for ${fileUri}\n`
@@ -1509,6 +1645,18 @@ export class LSPClient {
 
       const currentVersion = serverState.diagnosticVersions.get(fileUri) ?? -1;
       const currentUpdateTime = serverState.lastDiagnosticUpdate.get(fileUri) ?? lastUpdateTime;
+      const currentHasAnyUpdate =
+        serverState.lastDiagnosticUpdate.has(fileUri) || serverState.diagnostics.has(fileUri);
+
+      // If we've never seen any diagnostics update for this document, don't treat "no updates" as idle.
+      // Keep waiting up to maxWaitTime for the first publishDiagnostics.
+      if (!hasAnyUpdate && !currentHasAnyUpdate) {
+        continue;
+      }
+      if (!hasAnyUpdate && currentHasAnyUpdate) {
+        hasAnyUpdate = true;
+        lastUpdateTime = currentUpdateTime;
+      }
 
       // Check if version changed
       if (currentVersion !== lastVersion) {
@@ -1545,6 +1693,8 @@ export class LSPClient {
 
     // Ensure the file is opened and synced with the LSP server
     await this.ensureFileOpen(serverState, filePath);
+    // Claude edits happen outside LSP, so always sync from disk before querying diagnostics.
+    await this.syncFileContent(filePath);
 
     // First, check if we have cached diagnostics from publishDiagnostics
     const fileUri = pathToUri(filePath);
@@ -1562,7 +1712,17 @@ export class LSPClient {
       '[DEBUG getDiagnostics] No cached diagnostics, trying textDocument/diagnostic request\n'
     );
 
+    const supportsPullDiagnostics = Boolean(
+      serverState.serverCapabilities &&
+        typeof serverState.serverCapabilities === 'object' &&
+        'diagnosticProvider' in serverState.serverCapabilities
+    );
+
     try {
+      if (!supportsPullDiagnostics) {
+        throw new Error('Server does not advertise diagnosticProvider');
+      }
+
       const result = await this.sendRequest(serverState.process, 'textDocument/diagnostic', {
         textDocument: { uri: fileUri },
       });
@@ -1622,38 +1782,10 @@ export class LSPClient {
         // Get current file content
         const fileContent = readFileSync(filePath, 'utf-8');
 
-        // Send a no-op change notification (add and remove a space at the end)
-        // Use proper version tracking instead of timestamps
-        const version1 = (serverState.fileVersions.get(filePath) || 1) + 1;
-        serverState.fileVersions.set(filePath, version1);
-
-        await this.sendNotification(serverState.process, 'textDocument/didChange', {
-          textDocument: {
-            uri: fileUri,
-            version: version1,
-          },
-          contentChanges: [
-            {
-              text: `${fileContent} `,
-            },
-          ],
-        });
-
-        // Immediately revert the change with next version
-        const version2 = version1 + 1;
-        serverState.fileVersions.set(filePath, version2);
-
-        await this.sendNotification(serverState.process, 'textDocument/didChange', {
-          textDocument: {
-            uri: fileUri,
-            version: version2,
-          },
-          contentChanges: [
-            {
-              text: fileContent,
-            },
-          ],
-        });
+        // Send a no-op change notification (add and remove a space at the end).
+        // For servers using incremental sync, sendDidChange will emit a whole-document range update.
+        await this.sendDidChange(serverState, filePath, `${fileContent} `);
+        await this.sendDidChange(serverState, filePath, fileContent);
 
         // Wait for the server to process the changes and become idle
         // After making changes, servers may need time to re-analyze

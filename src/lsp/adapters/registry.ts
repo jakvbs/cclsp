@@ -1,5 +1,6 @@
 import type { LSPServerConfig } from '../../types.js';
 import { PyrightAdapter } from './pyright.js';
+import { TypeScriptLanguageServerAdapter } from './typescript-language-server.js';
 import type { ServerAdapter } from './types.js';
 import { VueLanguageServerAdapter } from './vue.js';
 
@@ -17,6 +18,7 @@ class AdapterRegistry {
     // Register all built-in adapters
     // Order matters - first match wins
     this.adapters = [
+      new TypeScriptLanguageServerAdapter(),
       new VueLanguageServerAdapter(),
       new PyrightAdapter(),
       // Add more built-in adapters here as needed

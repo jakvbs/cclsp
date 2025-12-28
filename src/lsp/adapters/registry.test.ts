@@ -23,13 +23,14 @@ describe('AdapterRegistry', () => {
       expect(adapter?.name).toBe('pyright');
     });
 
-    it('should return undefined for unknown server', () => {
+    it('should return TypeScriptLanguageServerAdapter for typescript-language-server', () => {
       const adapter = adapterRegistry.getAdapter({
         extensions: ['ts'],
         command: ['typescript-language-server', '--stdio'],
       });
 
-      expect(adapter).toBeUndefined();
+      expect(adapter).toBeDefined();
+      expect(adapter?.name).toBe('typescript-language-server');
     });
 
     it('should return undefined for pylsp', () => {
@@ -58,8 +59,9 @@ describe('AdapterRegistry', () => {
       const names = adapterRegistry.getAdapterNames();
 
       expect(names).toContain('vue-language-server');
+      expect(names).toContain('typescript-language-server');
       expect(names).toContain('pyright');
-      expect(names.length).toBeGreaterThanOrEqual(2);
+      expect(names.length).toBeGreaterThanOrEqual(3);
     });
   });
 });

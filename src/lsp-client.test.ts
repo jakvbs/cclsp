@@ -775,6 +775,7 @@ describe('LSPClient', () => {
         diagnostics: new Map(),
         lastDiagnosticUpdate: new Map(),
         diagnosticVersions: new Map(),
+        serverCapabilities: { diagnosticProvider: {} },
       };
 
       const getServerSpy = spyOn(
@@ -786,6 +787,8 @@ describe('LSPClient', () => {
         client as unknown as LSPClientInternal,
         'ensureFileOpen'
       ).mockResolvedValue(undefined);
+
+      const syncFileContentSpy = spyOn(client, 'syncFileContent').mockResolvedValue(undefined);
 
       const sendRequestSpy = spyOn(
         client as unknown as LSPClientInternal,
@@ -808,6 +811,7 @@ describe('LSPClient', () => {
 
       getServerSpy.mockRestore();
       ensureFileOpenSpy.mockRestore();
+      syncFileContentSpy.mockRestore();
       sendRequestSpy.mockRestore();
     });
 
@@ -822,6 +826,7 @@ describe('LSPClient', () => {
         diagnostics: new Map(),
         lastDiagnosticUpdate: new Map(),
         diagnosticVersions: new Map(),
+        serverCapabilities: { diagnosticProvider: {} },
       };
 
       const getServerSpy = spyOn(
@@ -833,6 +838,8 @@ describe('LSPClient', () => {
         client as unknown as LSPClientInternal,
         'ensureFileOpen'
       ).mockResolvedValue(undefined);
+
+      const syncFileContentSpy = spyOn(client, 'syncFileContent').mockResolvedValue(undefined);
 
       const sendRequestSpy = spyOn(
         client as unknown as LSPClientInternal,
@@ -848,6 +855,7 @@ describe('LSPClient', () => {
 
       getServerSpy.mockRestore();
       ensureFileOpenSpy.mockRestore();
+      syncFileContentSpy.mockRestore();
       sendRequestSpy.mockRestore();
     });
 
@@ -881,6 +889,7 @@ describe('LSPClient', () => {
         client as unknown as LSPClientInternal,
         'ensureFileOpen'
       ).mockResolvedValue(undefined);
+      const syncFileContentSpy = spyOn(client, 'syncFileContent').mockResolvedValue(undefined);
       const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
 
       const result = await client.getDiagnostics('/test.ts');
@@ -892,6 +901,7 @@ describe('LSPClient', () => {
 
       getServerSpy.mockRestore();
       ensureFileOpenSpy.mockRestore();
+      syncFileContentSpy.mockRestore();
       stderrSpy.mockRestore();
     });
 
@@ -906,6 +916,7 @@ describe('LSPClient', () => {
         diagnostics: new Map(),
         lastDiagnosticUpdate: new Map(),
         diagnosticVersions: new Map(),
+        serverCapabilities: { diagnosticProvider: {} },
       };
 
       const getServerSpy = spyOn(
@@ -918,10 +929,19 @@ describe('LSPClient', () => {
         'ensureFileOpen'
       ).mockResolvedValue(undefined);
 
+      const syncFileContentSpy = spyOn(client, 'syncFileContent').mockResolvedValue(undefined);
+
       const sendRequestSpy = spyOn(
         client as unknown as LSPClientInternal,
         'sendRequest'
       ).mockRejectedValue(new Error('Method not found'));
+
+      const waitForDiagnosticsIdleSpy = spyOn(
+        client as any,
+        'waitForDiagnosticsIdle'
+      ).mockImplementation(async () => {
+        mockServerState.diagnostics.set(pathToUri('/test.ts'), []);
+      });
 
       const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
 
@@ -934,7 +954,9 @@ describe('LSPClient', () => {
 
       getServerSpy.mockRestore();
       ensureFileOpenSpy.mockRestore();
+      syncFileContentSpy.mockRestore();
       sendRequestSpy.mockRestore();
+      waitForDiagnosticsIdleSpy.mockRestore();
       stderrSpy.mockRestore();
     });
 
@@ -949,6 +971,7 @@ describe('LSPClient', () => {
         diagnostics: new Map(),
         lastDiagnosticUpdate: new Map(),
         diagnosticVersions: new Map(),
+        serverCapabilities: { diagnosticProvider: {} },
       };
 
       const getServerSpy = spyOn(
@@ -961,6 +984,8 @@ describe('LSPClient', () => {
         'ensureFileOpen'
       ).mockResolvedValue(undefined);
 
+      const syncFileContentSpy = spyOn(client, 'syncFileContent').mockResolvedValue(undefined);
+
       const sendRequestSpy = spyOn(
         client as unknown as LSPClientInternal,
         'sendRequest'
@@ -972,6 +997,7 @@ describe('LSPClient', () => {
 
       getServerSpy.mockRestore();
       ensureFileOpenSpy.mockRestore();
+      syncFileContentSpy.mockRestore();
       sendRequestSpy.mockRestore();
     });
   });
