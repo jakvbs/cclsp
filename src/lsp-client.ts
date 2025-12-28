@@ -5,10 +5,14 @@ import { join, normalize, relative } from 'node:path';
 import { loadGitignore, scanDirectoryForExtensions } from './file-scanner.js';
 import { adapterRegistry } from './lsp/adapters/registry.js';
 import type {
+  CallHierarchyIncomingCall,
+  CallHierarchyItem,
+  CallHierarchyOutgoingCall,
   Config,
   Diagnostic,
   DocumentDiagnosticReport,
   DocumentSymbol,
+  Hover,
   LSPError,
   LSPLocation,
   LSPServerConfig,
@@ -16,6 +20,7 @@ import type {
   Position,
   SymbolInformation,
   SymbolMatch,
+  WorkspaceSymbol,
 } from './types.js';
 import { SymbolKind } from './types.js';
 import { pathToUri } from './utils.js';
@@ -43,6 +48,8 @@ interface ServerState {
   lastDiagnosticUpdate: Map<string, number>; // Track last update time per file
   diagnosticVersions: Map<string, number>; // Track diagnostic versions per file
   adapter?: import('./lsp/adapters/types.js').ServerAdapter; // Optional adapter for server-specific behavior
+  key: string; // Map key used in this.servers, avoids JSON.stringify in multiple places
+  serverCapabilities?: Record<string, unknown>; // Server capabilities from initResult
 }
 
 export class LSPClient {
@@ -54,6 +61,11 @@ export class LSPClient {
     number,
     { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }
   > = new Map();
+  private callHierarchyCache = new Map<
+    string,
+    { serverKey: string; item: CallHierarchyItem; createdAt: number }
+  >();
+  private callHierarchyIdCounter = 0;
 
   private isPylspServer(serverConfig: LSPServerConfig): boolean {
     return serverConfig.command.some((cmd) => cmd.includes('pylsp'));
@@ -199,6 +211,7 @@ export class LSPClient {
       );
     }
 
+    const key = JSON.stringify(serverConfig);
     const serverState: ServerState = {
       process: childProcess,
       initialized: false,
@@ -211,7 +224,8 @@ export class LSPClient {
       diagnostics: new Map(),
       lastDiagnosticUpdate: new Map(),
       diagnosticVersions: new Map(),
-      adapter, // Store adapter for later use
+      adapter,
+      key,
     };
 
     // Store the resolve function to call when initialized notification is received
@@ -292,11 +306,19 @@ export class LSPClient {
               snippetSupport: true,
             },
           },
-          hover: {},
+          hover: {
+            contentFormat: ['markdown', 'plaintext'],
+          },
           signatureHelp: {},
           diagnostic: {
             dynamicRegistration: false,
             relatedDocumentSupport: false,
+          },
+          implementation: {
+            linkSupport: false,
+          },
+          callHierarchy: {
+            dynamicRegistration: false,
           },
         },
         workspace: {
@@ -304,6 +326,14 @@ export class LSPClient {
             documentChanges: true,
           },
           workspaceFolders: true,
+          symbol: {
+            symbolKind: {
+              valueSet: [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26,
+              ],
+            },
+          },
         },
       },
       rootUri: pathToUri(serverConfig.rootDir || process.cwd()),
@@ -341,7 +371,22 @@ export class LSPClient {
       };
     }
 
-    const initResult = await this.sendRequest(childProcess, 'initialize', initializeParams);
+    // Allow adapter to customize initialization params
+    let finalInitializeParams = initializeParams;
+    if (adapter?.customizeInitializeParams) {
+      finalInitializeParams = adapter.customizeInitializeParams(initializeParams);
+    }
+
+    const initResult = (await this.sendRequest(
+      childProcess,
+      'initialize',
+      finalInitializeParams
+    )) as { capabilities?: Record<string, unknown> } | undefined;
+
+    // Store server capabilities for graceful short-circuit
+    if (initResult?.capabilities) {
+      serverState.serverCapabilities = initResult.capabilities;
+    }
 
     // Send the initialized notification after receiving the initialize response
     await this.sendNotification(childProcess, 'initialized', {});
@@ -532,6 +577,9 @@ export class LSPClient {
       serverState.restartTimer = undefined;
     }
 
+    // Clear call hierarchy cache for this server
+    this.clearCallHierarchyCacheForServer(key);
+
     // Terminate old server
     serverState.process.kill();
 
@@ -592,6 +640,9 @@ export class LSPClient {
           clearTimeout(state.restartTimer);
           state.restartTimer = undefined;
         }
+
+        // Clear call hierarchy cache for this server
+        this.clearCallHierarchyCacheForServer(key);
 
         // Terminate old server
         state.process.kill();
@@ -1703,6 +1754,229 @@ export class LSPClient {
     }
   }
 
+  async hover(filePath: string, position: Position): Promise<Hover> {
+    const serverState = await this.getServer(filePath);
+    await serverState.initializationPromise;
+
+    if (!serverState.serverCapabilities?.hoverProvider) {
+      return null;
+    }
+
+    await this.ensureFileOpen(serverState, filePath);
+
+    const method = 'textDocument/hover';
+    const timeout = serverState.adapter?.getTimeout?.(method) ?? 30000;
+
+    const result = await this.sendRequest(
+      serverState.process,
+      method,
+      { textDocument: { uri: pathToUri(filePath) }, position },
+      timeout
+    );
+
+    return (result as Hover) ?? null;
+  }
+
+  async goToImplementation(filePath: string, position: Position): Promise<Location[]> {
+    const serverState = await this.getServer(filePath);
+    await serverState.initializationPromise;
+
+    if (!serverState.serverCapabilities?.implementationProvider) {
+      return [];
+    }
+
+    await this.ensureFileOpen(serverState, filePath);
+
+    const method = 'textDocument/implementation';
+    const timeout = serverState.adapter?.getTimeout?.(method) ?? 30000;
+
+    const result = await this.sendRequest(
+      serverState.process,
+      method,
+      { textDocument: { uri: pathToUri(filePath) }, position },
+      timeout
+    );
+
+    if (!result) return [];
+    if (Array.isArray(result)) {
+      return result.map((loc: LSPLocation & { targetUri?: string; targetRange?: unknown }) => ({
+        uri: loc.targetUri ?? loc.uri,
+        range: (loc.targetRange as Location['range']) ?? loc.range,
+      }));
+    }
+    return [result as Location];
+  }
+
+  async workspaceSymbol(
+    query: string,
+    options?: { filePath?: string; extensions?: string[]; limit?: number }
+  ): Promise<{ results: (SymbolInformation | WorkspaceSymbol)[]; noServers?: boolean }> {
+    const { filePath, extensions, limit = 100 } = options ?? {};
+
+    let serversToQuery: ServerState[];
+
+    if (filePath) {
+      serversToQuery = [await this.getServer(filePath)];
+    } else if (extensions?.length) {
+      serversToQuery = [...this.servers.values()].filter((s) =>
+        s.config.extensions.some((ext) => extensions.includes(ext))
+      );
+    } else {
+      serversToQuery = [...this.servers.values()];
+    }
+
+    if (serversToQuery.length === 0) {
+      return { results: [], noServers: true };
+    }
+
+    const results: (SymbolInformation | WorkspaceSymbol)[] = [];
+    const method = 'workspace/symbol';
+
+    for (const serverState of serversToQuery) {
+      if (!serverState.serverCapabilities?.workspaceSymbolProvider) continue;
+
+      try {
+        await serverState.initializationPromise;
+        const timeout = serverState.adapter?.getTimeout?.(method) ?? 45000;
+        const serverResults = await this.sendRequest(
+          serverState.process,
+          method,
+          { query },
+          timeout
+        );
+
+        if (Array.isArray(serverResults)) {
+          results.push(...(serverResults as (SymbolInformation | WorkspaceSymbol)[]));
+        }
+      } catch (error) {
+        process.stderr.write(`[workspaceSymbol] Server error: ${error}\n`);
+      }
+
+      if (results.length >= limit) break;
+    }
+
+    return { results: results.slice(0, limit) };
+  }
+
+  private generateCallHierarchyId(): string {
+    return `ch_${++this.callHierarchyIdCounter}_${Date.now()}`;
+  }
+
+  private cleanupOldCallHierarchyItems(): void {
+    const MAX_AGE = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
+    for (const [id, entry] of this.callHierarchyCache) {
+      if (now - entry.createdAt > MAX_AGE) {
+        this.callHierarchyCache.delete(id);
+      }
+    }
+  }
+
+  private clearCallHierarchyCacheForServer(serverKey: string): void {
+    for (const [id, entry] of this.callHierarchyCache) {
+      if (entry.serverKey === serverKey) {
+        this.callHierarchyCache.delete(id);
+      }
+    }
+  }
+
+  async prepareCallHierarchy(
+    filePath: string,
+    position: Position
+  ): Promise<Array<CallHierarchyItem & { _itemId: string }>> {
+    const serverState = await this.getServer(filePath);
+    await serverState.initializationPromise;
+
+    if (!serverState.serverCapabilities?.callHierarchyProvider) {
+      return [];
+    }
+
+    await this.ensureFileOpen(serverState, filePath);
+    this.cleanupOldCallHierarchyItems();
+
+    const method = 'textDocument/prepareCallHierarchy';
+    const timeout = serverState.adapter?.getTimeout?.(method) ?? 30000;
+
+    const result = await this.sendRequest(
+      serverState.process,
+      method,
+      { textDocument: { uri: pathToUri(filePath) }, position },
+      timeout
+    );
+
+    if (!result || !Array.isArray(result)) return [];
+
+    return (result as CallHierarchyItem[]).map((item) => {
+      const itemId = this.generateCallHierarchyId();
+      this.callHierarchyCache.set(itemId, {
+        serverKey: serverState.key,
+        item,
+        createdAt: Date.now(),
+      });
+      return { ...item, _itemId: itemId };
+    });
+  }
+
+  async incomingCalls(itemId: string): Promise<CallHierarchyIncomingCall[]> {
+    this.cleanupOldCallHierarchyItems();
+
+    const cached = this.callHierarchyCache.get(itemId);
+    if (!cached) {
+      throw new Error(
+        `CallHierarchyItem not found or expired: ${itemId}. Use prepareCallHierarchy first.`
+      );
+    }
+
+    const serverState = this.servers.get(cached.serverKey);
+    if (!serverState) {
+      throw new Error('LSP server no longer available. Re-run prepareCallHierarchy.');
+    }
+
+    await serverState.initializationPromise;
+
+    const method = 'callHierarchy/incomingCalls';
+    const timeout = serverState.adapter?.getTimeout?.(method) ?? 45000;
+
+    const result = await this.sendRequest(
+      serverState.process,
+      method,
+      { item: cached.item },
+      timeout
+    );
+
+    return (result as CallHierarchyIncomingCall[]) ?? [];
+  }
+
+  async outgoingCalls(itemId: string): Promise<CallHierarchyOutgoingCall[]> {
+    this.cleanupOldCallHierarchyItems();
+
+    const cached = this.callHierarchyCache.get(itemId);
+    if (!cached) {
+      throw new Error(
+        `CallHierarchyItem not found or expired: ${itemId}. Use prepareCallHierarchy first.`
+      );
+    }
+
+    const serverState = this.servers.get(cached.serverKey);
+    if (!serverState) {
+      throw new Error('LSP server no longer available. Re-run prepareCallHierarchy.');
+    }
+
+    await serverState.initializationPromise;
+
+    const method = 'callHierarchy/outgoingCalls';
+    const timeout = serverState.adapter?.getTimeout?.(method) ?? 45000;
+
+    const result = await this.sendRequest(
+      serverState.process,
+      method,
+      { item: cached.item },
+      timeout
+    );
+
+    return (result as CallHierarchyOutgoingCall[]) ?? [];
+  }
+
   dispose(): void {
     for (const serverState of this.servers.values()) {
       // Clear restart timer if exists
@@ -1712,5 +1986,6 @@ export class LSPClient {
       serverState.process.kill();
     }
     this.servers.clear();
+    this.callHierarchyCache.clear();
   }
 }

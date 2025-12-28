@@ -168,3 +168,63 @@ export interface DocumentDiagnosticReport {
   resultId?: string;
   items?: Diagnostic[];
 }
+
+export type Range = {
+  start: Position;
+  end: Position;
+};
+
+export type MarkupKind = 'plaintext' | 'markdown';
+
+export type MarkupContent = {
+  kind: MarkupKind;
+  value: string;
+};
+
+export type MarkedString = string | { language: string; value: string };
+
+export type Hover = {
+  contents: MarkupContent | MarkedString | MarkedString[];
+  range?: Range;
+} | null;
+
+export type WorkspaceSymbolLocation = {
+  uri: string;
+};
+
+export type WorkspaceSymbol = {
+  name: string;
+  kind: SymbolKind;
+  tags?: SymbolTag[];
+  containerName?: string;
+  location: Location | WorkspaceSymbolLocation;
+  data?: unknown;
+};
+
+export type CallHierarchyItem = {
+  name: string;
+  kind: SymbolKind;
+  tags?: SymbolTag[];
+  detail?: string;
+  uri: string;
+  range: Range;
+  selectionRange: Range;
+  data?: unknown;
+};
+
+export type CallHierarchyIncomingCall = {
+  from: CallHierarchyItem;
+  fromRanges: Range[];
+};
+
+export type CallHierarchyOutgoingCall = {
+  to: CallHierarchyItem;
+  fromRanges: Range[];
+};
+
+export type LocationLink = {
+  originSelectionRange?: Range;
+  targetUri: string;
+  targetRange: Range;
+  targetSelectionRange: Range;
+};

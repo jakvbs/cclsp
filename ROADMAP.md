@@ -12,6 +12,11 @@ Make cclsp the go-to MCP server for Language Server Protocol integration, enabli
 - ✅ Multi-language support via configurable LSP servers
 - ✅ TypeScript/JavaScript support out of the box
 - ✅ Basic error handling and logging
+- ✅ Hover information (`textDocument/hover`)
+- ✅ Go to implementation (`textDocument/implementation`)
+- ✅ Workspace symbol search (`workspace/symbol`)
+- ✅ Call hierarchy navigation (`textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`)
+- ✅ Document symbols (via `textDocument/documentSymbol`)
 
 ## Short-term Goals (Next 3 months)
 
@@ -37,14 +42,14 @@ Make cclsp the go-to MCP server for Language Server Protocol integration, enabli
 
 ### v2.0 - Advanced LSP Features
 - [ ] Code completion support
-- [ ] Hover information
+- [x] Hover information
 - [ ] Signature help
-- [ ] Document symbols
-- [ ] Workspace symbols
+- [x] Document symbols
+- [x] Workspace symbols
 
 ### v2.1 - Project Intelligence
-- [ ] Project-wide symbol search
-- [ ] Call hierarchy navigation
+- [x] Project-wide symbol search
+- [x] Call hierarchy navigation
 - [ ] Type hierarchy support
 - [ ] Import/dependency analysis
 

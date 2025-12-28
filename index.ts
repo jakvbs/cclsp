@@ -6,7 +6,26 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { applyWorkspaceEdit } from './src/file-editor.js';
 import { LSPClient } from './src/lsp-client.js';
+import type { Hover, MarkedString, MarkupContent } from './src/types.js';
 import { uriToPath } from './src/utils.js';
+
+function formatHoverContents(contents: MarkupContent | MarkedString | MarkedString[]): string {
+  if (typeof contents === 'string') return contents;
+
+  if (Array.isArray(contents)) {
+    return contents.map(formatHoverContents).join('\n\n');
+  }
+
+  if ('kind' in contents) {
+    return contents.value;
+  }
+
+  if ('language' in contents) {
+    return `\`\`\`${contents.language}\n${contents.value}\n\`\`\``;
+  }
+
+  return String(contents);
+}
 
 // Handle subcommands
 const args = process.argv.slice(2);
@@ -188,6 +207,121 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 'Array of file extensions to restart servers for (e.g., ["ts", "tsx"]). If not provided, all servers will be restarted.',
             },
           },
+        },
+      },
+      {
+        name: 'hover',
+        description:
+          'Get hover information (documentation, type info) for a symbol at a specific position in a file.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            file_path: {
+              type: 'string',
+              description: 'Path to the file',
+            },
+            line: {
+              type: 'number',
+              description: 'Line number (1-indexed)',
+            },
+            character: {
+              type: 'number',
+              description: 'Character position (1-indexed)',
+            },
+          },
+          required: ['file_path', 'line', 'character'],
+        },
+      },
+      {
+        name: 'find_implementation',
+        description:
+          'Find implementations of an interface, abstract method, or type. Similar to find_definition but returns implementing classes/functions.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            file_path: {
+              type: 'string',
+              description: 'Path to the file containing the symbol',
+            },
+            symbol_name: {
+              type: 'string',
+              description: 'Name of the interface/method to find implementations for',
+            },
+            symbol_kind: {
+              type: 'string',
+              description: 'Kind of symbol (interface, method, class, etc.)',
+            },
+          },
+          required: ['file_path', 'symbol_name'],
+        },
+      },
+      {
+        name: 'workspace_symbol',
+        description:
+          'Search for symbols (functions, classes, variables, etc.) across the entire workspace. Queries all running LSP servers.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Symbol name pattern to search for (supports partial matching)',
+            },
+            file_path: {
+              type: 'string',
+              description: 'Optional: file to narrow search to its LSP server',
+            },
+            extensions: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional: file extensions to limit search (e.g., ["ts", "tsx"])',
+            },
+            limit: {
+              type: 'number',
+              description: 'Max results to return (default: 100)',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'call_hierarchy',
+        description:
+          'Navigate call relationships for functions/methods. Use action="prepare" first to get item IDs, then "incoming" or "outgoing" with the item_id.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['prepare', 'incoming', 'outgoing'],
+              description:
+                'Action: "prepare" finds callable at position, "incoming/outgoing" gets callers/callees',
+            },
+            file_path: {
+              type: 'string',
+              description: 'Path to file (required for prepare)',
+            },
+            symbol_name: {
+              type: 'string',
+              description: 'Symbol name (for prepare)',
+            },
+            symbol_kind: {
+              type: 'string',
+              description: 'Symbol kind (for prepare)',
+            },
+            line: {
+              type: 'number',
+              description: 'Line number (1-indexed) for disambiguation',
+            },
+            character: {
+              type: 'number',
+              description: 'Character position (1-indexed) for disambiguation',
+            },
+            item_id: {
+              type: 'string',
+              description: 'Item ID from prepare result (required for incoming/outgoing)',
+            },
+          },
+          required: ['action'],
         },
       },
     ],
@@ -688,6 +822,366 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `Error restarting servers: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === 'hover') {
+      const { file_path, line, character } = args as {
+        file_path: string;
+        line: number;
+        character: number;
+      };
+      const absolutePath = resolve(file_path);
+
+      try {
+        const result = await lspClient.hover(absolutePath, {
+          line: line - 1,
+          character: character - 1,
+        });
+
+        if (!result) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `No hover information at ${file_path}:${line}:${character}`,
+              },
+            ],
+          };
+        }
+
+        const text = formatHoverContents(result.contents);
+        return {
+          content: [
+            {
+              type: 'text',
+              text,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error getting hover info: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === 'find_implementation') {
+      const { file_path, symbol_name, symbol_kind } = args as {
+        file_path: string;
+        symbol_name: string;
+        symbol_kind?: string;
+      };
+      const absolutePath = resolve(file_path);
+
+      const result = await lspClient.findSymbolsByName(absolutePath, symbol_name, symbol_kind);
+      const { matches: symbolMatches, warning } = result;
+
+      if (symbolMatches.length === 0) {
+        const responseText = warning
+          ? `${warning}\n\nNo symbols found with name "${symbol_name}"${symbol_kind ? ` and kind "${symbol_kind}"` : ''} in ${file_path}.`
+          : `No symbols found with name "${symbol_name}"${symbol_kind ? ` and kind "${symbol_kind}"` : ''} in ${file_path}.`;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: responseText,
+            },
+          ],
+        };
+      }
+
+      const results = [];
+      for (const match of symbolMatches) {
+        try {
+          const locations = await lspClient.goToImplementation(absolutePath, match.position);
+
+          if (locations.length > 0) {
+            const locationResults = locations
+              .map((loc) => {
+                const filePath = uriToPath(loc.uri);
+                const { start } = loc.range;
+                return `${filePath}:${start.line + 1}:${start.character + 1}`;
+              })
+              .join('\n');
+
+            results.push(
+              `Implementations for ${match.name} (${lspClient.symbolKindToString(match.kind)}) at ${file_path}:${match.position.line + 1}:${match.position.character + 1}:\n${locationResults}`
+            );
+          }
+        } catch (error) {
+          // Continue trying other symbols if one fails
+        }
+      }
+
+      if (results.length === 0) {
+        const responseText = warning
+          ? `${warning}\n\nFound ${symbolMatches.length} symbol(s) but no implementations could be retrieved.`
+          : `Found ${symbolMatches.length} symbol(s) but no implementations could be retrieved.`;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: responseText,
+            },
+          ],
+        };
+      }
+
+      const responseText = warning ? `${warning}\n\n${results.join('\n\n')}` : results.join('\n\n');
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: responseText,
+          },
+        ],
+      };
+    }
+
+    if (name === 'workspace_symbol') {
+      const { query, file_path, extensions, limit } = args as {
+        query: string;
+        file_path?: string;
+        extensions?: string[];
+        limit?: number;
+      };
+
+      try {
+        const result = await lspClient.workspaceSymbol(query, {
+          filePath: file_path ? resolve(file_path) : undefined,
+          extensions,
+          limit,
+        });
+
+        if (result.noServers) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'No LSP servers are currently running. Use a file-based tool first to start a server, or check your cclsp configuration.',
+              },
+            ],
+          };
+        }
+
+        if (result.results.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `No symbols found matching "${query}"`,
+              },
+            ],
+          };
+        }
+
+        const formatted = result.results
+          .map((sym) => {
+            const loc = 'location' in sym ? sym.location : undefined;
+            const filePath = loc && 'uri' in loc ? uriToPath(loc.uri) : 'unknown';
+            const line =
+              loc && 'range' in loc && loc.range
+                ? (loc.range as { start: { line: number } }).start.line + 1
+                : '?';
+            return `${sym.name} (${lspClient.symbolKindToString(sym.kind)}) - ${filePath}:${line}`;
+          })
+          .join('\n');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Found ${result.results.length} symbols:\n${formatted}`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error searching symbols: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === 'call_hierarchy') {
+      const { action, file_path, symbol_name, symbol_kind, line, character, item_id } = args as {
+        action: 'prepare' | 'incoming' | 'outgoing';
+        file_path?: string;
+        symbol_name?: string;
+        symbol_kind?: string;
+        line?: number;
+        character?: number;
+        item_id?: string;
+      };
+
+      try {
+        if (action === 'prepare') {
+          if (!file_path || !symbol_name) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'file_path and symbol_name are required for prepare action',
+                },
+              ],
+            };
+          }
+
+          const absolutePath = resolve(file_path);
+          let position: { line: number; character: number };
+
+          if (line !== undefined && character !== undefined) {
+            position = { line: line - 1, character: character - 1 };
+          } else {
+            const { matches } = await lspClient.findSymbolsByName(
+              absolutePath,
+              symbol_name,
+              symbol_kind
+            );
+
+            if (matches.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Symbol "${symbol_name}" not found in ${file_path}`,
+                  },
+                ],
+              };
+            }
+
+            if (matches.length > 1) {
+              const candidates = matches
+                .map(
+                  (m) =>
+                    `• ${m.name} (${lspClient.symbolKindToString(m.kind)}) at line ${m.position.line + 1}, character ${m.position.character + 1}`
+                )
+                .join('\n');
+
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Multiple symbols found matching "${symbol_name}". Please use line/character to disambiguate:\n\n${candidates}`,
+                  },
+                ],
+              };
+            }
+
+            const firstMatch = matches[0];
+            if (!firstMatch) {
+              throw new Error('Unexpected empty matches array');
+            }
+            position = firstMatch.position;
+          }
+
+          const items = await lspClient.prepareCallHierarchy(absolutePath, position);
+
+          if (items.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'No call hierarchy available for this symbol',
+                },
+              ],
+            };
+          }
+
+          const formatted = items
+            .map(
+              (item) =>
+                `• ${item.name} (${lspClient.symbolKindToString(item.kind)}) - item_id: ${item._itemId}`
+            )
+            .join('\n');
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Call hierarchy items:\n${formatted}\n\nUse item_id with action="incoming" or "outgoing"`,
+              },
+            ],
+          };
+        }
+
+        if (action === 'incoming' || action === 'outgoing') {
+          if (!item_id) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'item_id is required for incoming/outgoing action',
+                },
+              ],
+            };
+          }
+
+          const calls =
+            action === 'incoming'
+              ? await lspClient.incomingCalls(item_id)
+              : await lspClient.outgoingCalls(item_id);
+
+          if (calls.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `No ${action} calls found`,
+                },
+              ],
+            };
+          }
+
+          const formatted = calls
+            .map((call) => {
+              const item = 'from' in call ? call.from : call.to;
+              const filePath = uriToPath(item.uri);
+              const callLine = item.selectionRange.start.line + 1;
+              return `• ${item.name} (${lspClient.symbolKindToString(item.kind)}) - ${filePath}:${callLine}`;
+            })
+            .join('\n');
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `${action === 'incoming' ? 'Incoming' : 'Outgoing'} calls:\n${formatted}`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Unknown action: ${action}. Use "prepare", "incoming", or "outgoing".`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error in call hierarchy: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
         };
