@@ -55,18 +55,21 @@ if [[ -z "${CCLSP_CONFIG_PATH:-}" ]]; then
   exit 0
 fi
 
-# Call cclsp via mcporter
-RESULT=$(cd "$MCPORTER_DIR" && pnpm --silent mcporter call cclsp.get_diagnostics "file_path=$FILE_PATH" 2>&1) || true
+# Call cclsp via mcporter with timeout to prevent hanging
+if ! RESULT=$(cd "$MCPORTER_DIR" && timeout 10s pnpm --silent mcporter call cclsp.get_diagnostics "file_path=$FILE_PATH" 2>&1); then
+  # mcporter/cclsp failed or timed out - don't block, just continue
+  exit 0
+fi
 
-# Check if there are diagnostics (not "No diagnostics found")
-if echo "$RESULT" | grep -q "No diagnostics found"; then
+# Check if there are diagnostics (handle empty output or "No diagnostics found")
+if [[ -z "$RESULT" ]] || echo "$RESULT" | grep -q "No diagnostics"; then
   exit 0  # All good
 fi
 
 # Block only on LSP errors (not warnings/hints)
 if echo "$RESULT" | grep -qE "^• Error"; then
-  # Output diagnostics to stderr (Claude will see this)
-  echo "LSP Diagnostics (errors):" >&2
+  # Output full diagnostics to stderr (hints included for context)
+  echo "LSP Diagnostics:" >&2
   echo "$RESULT" >&2
   exit 2  # Block and inform Claude
 fi
