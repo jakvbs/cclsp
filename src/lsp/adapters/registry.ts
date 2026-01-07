@@ -1,7 +1,7 @@
 import type { LSPServerConfig } from '../../types.js';
 import { PyrightAdapter } from './pyright.js';
-import { TypeScriptLanguageServerAdapter } from './typescript-language-server.js';
 import type { ServerAdapter } from './types.js';
+import { TypeScriptLanguageServerAdapter } from './typescript-language-server.js';
 import { VueLanguageServerAdapter } from './vue.js';
 
 /**

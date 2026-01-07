@@ -16,12 +16,13 @@ export class TypeScriptLanguageServerAdapter implements ServerAdapter {
   }
 
   customizeInitializeParams(params: InitializeParams): InitializeParams {
+    // biome-ignore lint/suspicious/noExplicitAny: LSP capabilities object has dynamic structure
     const capabilities = (params.capabilities ?? {}) as any;
     capabilities.textDocument ??= {};
 
     // Prefer push diagnostics; do not advertise pull-diagnostics for this server.
     if (capabilities.textDocument.diagnostic) {
-      delete capabilities.textDocument.diagnostic;
+      capabilities.textDocument.diagnostic = undefined;
     }
 
     // Explicitly advertise publishDiagnostics support.
